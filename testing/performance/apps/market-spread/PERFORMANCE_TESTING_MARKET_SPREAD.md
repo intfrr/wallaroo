@@ -1,242 +1,443 @@
-# Wallaroo Market Spread Single Machine Performance Testing on AWS
+# Performance Testing Pony Market Spread Guide
 
-If you have not followed the setup instructions in the orchestration/terraform [README](https://github.com/WallarooLabs/wallaroo/tree/0.1.0-rc2/orchestration/terraform) please do so before continuing.
+This is a guide to help you setup an AWS cluster in order to performance test Pony Market Spread. This guide includes both [single worker](#single-worker-pony-market-spread) and [two worker](#two-worker-pony-market-spread) guides.
 
-## Configuring Cluster:
+If you have not followed the setup instructions in the `orchestration/terraform` [README](../../../../orchestration/terraform/README.md) please do so before continuing.
 
-Before configuring your cluster, make sure you are in
-your `orchestration/terraform` directory.
+## Single Worker Pony Market Spread
 
-Once set up, an AWS cluster can be started with the following command:
+### Cluster Start
+
+To start an AWS cluster first change directories from within the main `wallaroo` directory with the following command:
 
 ```bash
-make cluster cluster_name=<YOUR_CLUSTER_NAME> mem_required=30 cpus_required=36 num_followers=0 force_instance=c4.8xlarge spot_bid_factor=100 ansible_system_cpus=0,18 ansible_isolcpus=false no_spot=true
+cd orchestration/terraform
 ```
 
-You'll get a response ending with something similar to this if successful:
+Then run the following command to start a 3 machine cluster:
+
+```bash
+make cluster cluster_name=<YOUR_CLUSTER_NAME> mem_required=30 cpus_required=36 num_followers=2 force_instance=c4.8xlarge spot_bid_factor=100 ansible_system_cpus=0,18 ansible_isolcpus=true no_spot=true cluster_project_name=wallaroo_perf_testing
+```
+
+If successful, you should see output that looks like this:
 
 ```bash
 PLAY RECAP *********************************************************************
-54.165.9.39                : ok=70   changed=39   unreachable=0    failed=0
+52.3.244.174               : ok=86   changed=54   unreachable=0    failed=0
+54.172.117.178             : ok=86   changed=54   unreachable=0    failed=0
+54.174.246.168             : ok=87   changed=54   unreachable=0    failed=0
+
+==> Successfully ran ansible playbook for cluster 'perftest' in region 'us-east-1' at provider 'aws'!
 ```
 
-You can SSH into the AWS machine using:
+You can SSH into the AWS machines using:
 
 ```bash
 ssh -i ~/.ssh/ec2/us-east-1.pem ubuntu@<IP_ADDRESS>
 ```
 
-### Clone Wallaroo repo
+### Build Setup
 
-You'll need to clone the repo:
+SSH into the `wallaroo-leader-1` machine and follow the linux set up [instructions](../../../../book/getting-started/linux-setup.md) up to the `Installing pony-stable` section.
 
-```
+Get a copy of the `wallaroo` repo:
+
+```bash
+cd ~/
 git clone https://github.com/WallarooLabs/wallaroo.git
 ```
-
-### Verify optimal setup
-
-```bash
-~/wallaroo/orchestration/validate_environment.sh
-```
-
-You should see:
-
-```bash
-CPU governor is set up correctly (performance) for optimal performance.
-CPU turbo boost is disabled for optimal performance so the hardware can't change cpu frequencies during a run.
-Hyperthreaded cpus are disabled/set up correctly for optimal performance.
-Network driver is set up correctly for optimal performance.
-System cpu isolation set up as expected for optimal performance.
-System clocksource is set up correctly for optimal performance.
-tsc clocksource is set as reliable correctly for optimal performance.
-Transparent hugepages is disabled as required for optimal performance.
-Swappiness is set to 0 as required for optimal performance.
-```
-
-### Startup the Metrics UI
-
-You need to create a docker network for the UI's with the following command:
-
-```bash
-docker network create wallaroo-leader
-```
-
-To run the Metrics UI:
-
-```bash
-docker run -d -u root --cpuset-cpus 0,18 --privileged  \
--v /usr/bin:/usr/bin:ro   -v /var/run/docker.sock:/var/run/docker.sock \
--v /bin:/bin:ro  -v /lib:/lib:ro  -v /lib64:/lib64:ro  -v /usr:/usr:ro  \
--v /tmp:/apps/metrics_reporter_ui/log  \
--p 0.0.0.0:4000:4000 -p 0.0.0.0:5001:5001 \
--e "BINS_TYPE=demo" -e "RELX_REPLACE_OS_VARS=true" \
---name mui -h mui --net=wallaroo-leader \
-docker.sendence.com:5043/sendence/monitoring_hub-apps-metrics_reporter_ui.amd64:sendence-2.3.0-2462-gf6421db
-```
-
-#### Restarting UIs
-
-If you need to restart the UI, this can be accomplished by:
-
-```bash
-docker stop mui && docker start mui
-```
-
-### Running Market Spread
-
-To build Market Spread:
+Build the Market Spread application and Wallaroo tools:
 
 ```bash
 cd ~/wallaroo
-make arch=amd64 build-testing-performance-apps-market-spread
+make build-testing-performance-app-market_spread
+make build-giles-sender
+make build-giles-receiver
+make build-utils-cluster_shutdown
 ```
 
-To build Giles Sender:
+`scp` Wallaroo to other workers on the cluster:
 
 ```bash
-cd ~/wallaroo
-make arch=amd64 build-giles-sender
+scp -r -o StrictHostKeyChecking=no ~/wallaroo/ ubuntu@wallaroo-follower-1:~/wallaroo
+scp -r -o StrictHostKeyChecking=no ~/wallaroo/ ubuntu@wallaroo-follower-2:~/wallaroo
 ```
 
-To build Giles Receiver:
+#### Start Metrics UI
+
+SSH into `wallaroo-follower-2`
+
+Start the Metrics UI:
 
 ```bash
-cd ~/wallaroo
-make arch=amd64 build-giles-receiver
+docker run -d -u root --cpuset-cpus 0,18 --privileged  -v /usr/bin:/usr/bin:ro   -v /var/run/docker.sock:/var/run/docker.sock -v /bin:/bin:ro  -v /lib:/lib:ro  -v /lib64:/lib64:ro  -v /usr:/usr:ro  -v /tmp:/apps/metrics_reporter_ui/log  -p 0.0.0.0:4000:4000 -p 0.0.0.0:5001:5001 -e "BINS_TYPE=demo" -e "RELX_REPLACE_OS_VARS=true" --name mui -h mui --net=host wallaroolabs/wallaroo-metrics-ui:0.1
+
 ```
 
-### SINGLE WORKER market spread:
+##### Restarting the Metrics UI
 
-You'll need to have 4 terminals available. 2 for giles senders, 1 for giles receiver, and 1 for the market spread application:
-
-Giles receiver needs to be running before marketspread:
+If you need to restart the Metrics UI, run the following command on the machine you started the Metrics UI on:
 
 ```bash
-cd ~/wallaroo
-sudo cset proc -s user -e numactl -- -C 14,17 chrt -f 80 ~/wallaroo/giles/receiver/receiver --ponythreads=1 --ponynoblock --ponypinasio -w -l 127.0.0.1:5555
+docker restart mui
+```
+
+### Running Single Worker Market Spread
+
+#### Start Giles Receiver
+
+SSH into `wallaroo-follower-2`
+
+Start Giles Receiver with the following command:
+
+```bash
+sudo cset proc -s user -e numactl -- -C 1,17 chrt -f 80 ~/wallaroo/giles/receiver/receiver --ponythreads=1 --ponynoblock --ponypinasio -w -l wallaroo-follower-2:5555
+```
+
+#### Start the Market Spread Application
+
+SSH into `wallaroo-leader-1`
+
+Start the Market Spread application with the following command:
+
+```bash
+sudo cset proc -s user -e numactl -- -C 1-16,17 chrt -f 80 ~/wallaroo/testing/performance/apps/market-spread/market-spread -i wallaroo-leader-1:7000,wallaroo-leader-1:7001 -o wallaroo-follower-2:5555 -m wallaroo-follower-2:5001 -c wallaroo-leader-1:12500 -d wallaroo-leader-1:12501 -t -e wallaroo-leader-1:5050 --ponynoblock --ponythreads=16 --ponypinasio
+
+```
+
+#### Start Giles Senders
+
+SSH into `wallaroo-follower-1`
+
+You can run the following commands individually or in a script, the only sender that must be run to completion before starting any of the others is the Initial NBBO Sender.
+
+##### Initial NBBO Sender
+
+```bash
+sudo cset proc -s user -e numactl -- -C 1,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7001 -m 350 -s 350 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/nbbo/350-symbols_initial-nbbo-fixish.msg --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
+```
+
+##### NBBO Senders
+
+These senders send out roughly 1.5 million messages per second, adjust according to your needs.
+
+```bash
+sudo cset proc -s user -e numactl -- -C 2,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7001 -m 10000000000 -s 450 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/nbbo/350-symbols_nbbo-fixish.msg -r --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
 ```
 
 ```bash
-cd ~/wallaroo/testing/performance/apps/market-spread
-sudo cset proc -s user -e numactl -- -C 1-8,17 chrt -f 80 ./market-spread -i 127.0.0.1:7000,127.0.0.1:7001 -o 127.0.0.1:5555 -m 127.0.0.1:5001 --ponythreads 8 --ponypinasio --ponynoblock -c 127.0.0.1:12500 -d 127.0.0.1:12501 -t
+sudo cset proc -s user -e numactl -- -C 3,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7001 -m 10000000000 -s 450 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/nbbo/350-symbols_nbbo-fixish.msg -r --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
 ```
-
-To run the Initial NBBO Sender: (must be started before Orders so that the initial NBBO can be set)
 
 ```bash
-cd ~/wallaroo
-sudo cset proc -s user -e numactl -- -C 15,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h 127.0.0.1:7001 -m 350 -s 300 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/350-symbols_initial-nbbo-fixish.msg --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
+sudo cset proc -s user -e numactl -- -C 4,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7001 -m 10000000000 -s 450 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/nbbo/350-symbols_nbbo-fixish.msg -r --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
 ```
-
-To run the NBBO Sender:
 
 ```bash
-cd ~/wallaroo
-sudo cset proc -s user -e numactl -- -C 15,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h 127.0.0.1:7001 -m 10000000000 -s 300 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/350-symbols_nbbo-fixish.msg -r --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
+sudo cset proc -s user -e numactl -- -C 5,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7001 -m 10000000000 -s 450 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/nbbo/350-symbols_nbbo-fixish.msg -r --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
 ```
-
-To run the Orders Sender:
 
 ```bash
-cd ~/wallaroo
-sudo cset proc -s user -e numactl -- -C 16,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h 127.0.0.1:7000 -m 5000000000 -s 300 -i 5_000_000 -f ~/wallaroo/testing/data/market_spread/350-symbols_orders-fixish.msg -r --ponythreads=1 -y -g 57 --ponypinasio -w —ponynoblock
+sudo cset proc -s user -e numactl -- -C 6,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7001 -m 10000000000 -s 450 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/nbbo/350-symbols_nbbo-fixish.msg -r --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
 ```
-
-### Running with System Tap (stap) on Linux
-
-Install stap:
 
 ```bash
-sudo apt-get install -y systemtap systemtap-runtime systemtap-sdt-dev
+sudo cset proc -s user -e numactl -- -C 7,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7001 -m 10000000000 -s 450 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/nbbo/350-symbols_nbbo-fixish.msg -r --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
 ```
-
-Get the `dh_actor_telemetry` ponyc branch.
-
-Compile ponyc:
 
 ```bash
-sudo make install LLVM_CONFIG=~/clang+llvm-3.8.1-x86_64-linux-gnu-ubuntu-16.04/bin/llvm-config use=dtrace
+sudo cset proc -s user -e numactl -- -C 8,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7001 -m 10000000000 -s 450 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/nbbo/350-symbols_nbbo-fixish.msg -r --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
 ```
 
-Model for running stap (you need to fill in the -c argument as in the example below this one):
+##### Orders Senders
+
+These senders send out roughly 1.5 million messages per second, adjust according to your needs.
 
 ```bash
-stap ~/ponyc/examples/systemtap/actor-telemetry-heap-only.stp -o stap-out.txt -g --suppress-time-limits -c 'command + args in a string'
+sudo cset proc -s user -e numactl -- -C 9,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7000 -m 5000000000 -s 900 -i 5_000_000 -f ~/wallaroo/testing/data/market_spread/orders/350-symbols_orders-fixish.msg -r --ponythreads=1 -y -g 57 --ponypinasio -w —ponynoblock
 ```
-
-#### Analyzing output
-
-Get sizes for gc
 
 ```bash
-grep gc_heapsize telemout.txt | awk -F: '{print $2}' | sort -n| tail
+sudo cset proc -s user -e numactl -- -C 10,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7000 -m 5000000000 -s 900 -i 5_000_000 -f ~/wallaroo/testing/data/market_spread/orders/350-symbols_orders-fixish.msg -r --ponythreads=1 -y -g 57 --ponypinasio -w —ponynoblock
 ```
-
-Get sizes for alloc
 
 ```bash
-grep alloc_heapsize telemout.txt | awk -F: '{print $2}' | sort -n | tail
+sudo cset proc -s user -e numactl -- -C 11,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7000 -m 5000000000 -s 900 -i 5_000_000 -f ~/wallaroo/testing/data/market_spread/orders/350-symbols_orders-fixish.msg -r --ponythreads=1 -y -g 57 --ponypinasio -w —ponynoblock
 ```
-
-Get type_ids. Replace the values with sizes you're looking for.
 
 ```bash
-egrep '500405056|478746624|2997216|2599456|1185184|135232' -B 4 telemout.txt
+sudo cset proc -s user -e numactl -- -C 12,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7000 -m 5000000000 -s 900 -i 5_000_000 -f ~/wallaroo/testing/data/market_spread/orders/350-symbols_orders-fixish.msg -r --ponythreads=1 -y -g 57 --ponypinasio -w —ponynoblock
 ```
 
+```bash
+sudo cset proc -s user -e numactl -- -C 13,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7000 -m 5000000000 -s 900 -i 5_000_000 -f ~/wallaroo/testing/data/market_spread/orders/350-symbols_orders-fixish.msg -r --ponythreads=1 -y -g 57 --ponypinasio -w —ponynoblock
+```
 
-### Installing a custom Ponyc environment
+```bash
+sudo cset proc -s user -e numactl -- -C 14,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7000 -m 5000000000 -s 900 -i 5_000_000 -f ~/wallaroo/testing/data/market_spread/orders/350-symbols_orders-fixish.msg -r --ponythreads=1 -y -g 57 --ponypinasio -w —ponynoblock
+```
 
-This is needed if you are going to be making changes to the Pony runtime as
-part of tests.
+```bash
+sudo cset proc -s user -e numactl -- -C 15,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7000 -m 5000000000 -s 900 -i 5_000_000 -f ~/wallaroo/testing/data/market_spread/orders/350-symbols_orders-fixish.msg -r --ponythreads=1 -y -g 57 --ponypinasio -w —ponynoblock
+```
 
-#### Install Clang/LLVM
+#### Market Spread Cluster Shutdown
 
-You should install prebuilt Clang 3.8.1 from the [LLVM download page](http://llvm.org/releases/download.html#3.8.1) under Pre-Built Binaries:
+When it's time to shutdown your Market Spread cluster, you'd want to do the following.
+
+SSH into `wallaroo-follower-2`
+
+Run the following command to shutdown the cluster:
+
+```bash
+sudo cset proc -s user -e numactl -- -C 2,17 chrt -f 80 ~/wallaroo/utils/cluster_shutdown/cluster_shutdown wallaroo-leader-1:5050 --ponythreads=1 --ponynoblock --ponypinasio
+```
+
+#### AWS Cluster Shutdown
+
+When it's time to shutdown your AWS cluster, you'd want to do the following.
+
+On your local machine, from the `orchestration/terraform` directory, run the following command:
+
+```bash
+make destroy cluster_name=<YOUR_CLUSTER_NAME> mem_required=30 cpus_required=36 num_followers=3 force_instance=c4.8xlarge spot_bid_factor=100 ansible_system_cpus=0,18 ansible_isolcpus=true no_spot=true cluster_project_name=wallaroo_perf_testing
+
+```
+
+You should see output similar to the following if your cluster shutdown properly:
+
+```bash
+Destroy complete! Resources: 5 destroyed.
+==> Successfully ran terraform destroy for cluster 'perftest' in region 'us-east-1' at provider 'aws'!
+==> Releasing cluster lock...
+aws sdb put-attributes --region us-east-1 --domain-name \
+          terraform_locking --item-name aws-us-east-1_lock --attributes \
+          Name=perftest-lock,Value=free,Replace=true \
+          --expected Name=perftest-lock,Value=`id -u -n`-`hostname`
+==> Cluster lock successfully released!
+```
+
+## Two Worker Pony Market Spread
+
+### Cluster Start
+
+To start an AWS cluster first change directories from within the main `wallaroo` directory with the following command:
+
+```bash
+cd orchestration/terraform
+```
+
+Then run the following command to start a 4 machine cluster:
+
+```bash
+make cluster cluster_name=<YOUR_CLUSTER_NAME> mem_required=30 cpus_required=36 num_followers=3 force_instance=c4.8xlarge spot_bid_factor=100 ansible_system_cpus=0,18 ansible_isolcpus=true no_spot=true cluster_project_name=wallaroo_perf_testing
+```
+
+If successful, you should see output that looks like this:
+
+```bash
+PLAY RECAP *********************************************************************
+52.3.244.174               : ok=86   changed=54   unreachable=0    failed=0
+54.172.117.178             : ok=86   changed=54   unreachable=0    failed=0
+54.174.246.168             : ok=87   changed=54   unreachable=0    failed=0
+
+==> Successfully ran ansible playbook for cluster 'perftest' in region 'us-east-1' at provider 'aws'!
+```
+
+You can SSH into the AWS machines using:
+
+```bash
+ssh -i ~/.ssh/ec2/us-east-1.pem ubuntu@<IP_ADDRESS>
+```
+
+### Build Setup
+
+SSH into the `wallaroo-leader-1` machine and follow the linux set up [instructions](../../../../book/getting-started/linux-setup.md) up to the `Installing pony-stable` section.
+
+Get a copy of the `wallaroo` repo:
 
 ```bash
 cd ~/
-wget http://llvm.org/releases/3.8.1/clang+llvm-3.8.1-x86_64-linux-gnu-ubuntu-16.04.tar.xz
-tar xvf clang+llvm-3.8.1-x86_64-linux-gnu-ubuntu-16.04.tar.xz
-export PATH=~/clang+llvm-3.8.1-x86_64-linux-gnu-ubuntu-16.04/bin/:$PATH
-echo "export PATH=~/clang+llvm-3.8.1-x86_64-linux-gnu-ubuntu-16.04/bin/:\$PATH" >> ~/.bashrc
+git clone https://github.com/WallarooLabs/wallaroo.git
 ```
-
-#### Install Ponyc dependencies
+Build the Market Spread application and Wallaroo tools:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y build-essential git zlib1g-dev libncurses5-dev libssl-dev
+cd ~/wallaroo
+make build-testing-performance-app-market_spread
+make build-giles-sender
+make build-giles-receiver
+make build-utils-cluster_shutdown
 ```
 
-#### Install PCRE2
+`scp` Wallaroo to other workers on the cluster:
 
 ```bash
-cd ~/
-wget ftp://ftp.csx.cam.ac.uk/pub/software/programming/pcre/pcre2-10.21.tar.bz2
-tar xvf pcre2-10.21.tar.bz2
-cd pcre2-10.21
-./configure --prefix=/usr
-sudo make install
+scp -r -o StrictHostKeyChecking=no ~/wallaroo/ ubuntu@wallaroo-follower-1:~/wallaroo
+scp -r -o StrictHostKeyChecking=no ~/wallaroo/ ubuntu@wallaroo-follower-2:~/wallaroo
+scp -r -o StrictHostKeyChecking=no ~/wallaroo/ ubuntu@wallaroo-follower-3:~/wallaroo
 ```
 
-#### Install Wallaroo Labs ponyc
+#### Start Metrics UI
+
+SSH into `wallaroo-follower-2`
+
+Start the Metrics UI:
 
 ```bash
-cd ~/
-git clone https://github.com/WallarooLabs/ponyc.git
-cd ~/ponyc/
-sudo make install LLVM_CONFIG=~/clang+llvm-3.8.1-x86_64-linux-gnu-ubuntu-16.04/bin/llvm-config
+docker run -d -u root --cpuset-cpus 0,18 --privileged  -v /usr/bin:/usr/bin:ro   -v /var/run/docker.sock:/var/run/docker.sock -v /bin:/bin:ro  -v /lib:/lib:ro  -v /lib64:/lib64:ro  -v /usr:/usr:ro  -v /tmp:/apps/metrics_reporter_ui/log  -p 0.0.0.0:4000:4000 -p 0.0.0.0:5001:5001 -e "BINS_TYPE=demo" -e "RELX_REPLACE_OS_VARS=true" --name mui -h mui --net=host wallaroolabs/wallaroo-metrics-ui:0.1
+
 ```
 
-#### Install pony-stable
+##### Restarting the Metrics UI
+
+If you need to restart the Metrics UI, run the following command on the machine you started the Metrics UI on:
 
 ```bash
-cd ~/
-git clone https://github.com/ponylang/pony-stable
-cd pony-stable
-git checkout 0054b429a54818d187100ed40f5525ec7931b31b;
-sudo make install
+docker restart mui
 ```
 
+### Running Two Worker Market Spread
+
+#### Start Giles Receiver
+
+SSH into `wallaroo-follower-2`
+
+Start Giles Receiver with the following command:
+
+```bash
+sudo cset proc -s user -e numactl -- -C 1,17 chrt -f 80 ~/wallaroo/giles/receiver/receiver --ponythreads=1 --ponynoblock --ponypinasio -w -l wallaroo-follower-2:5555
+```
+
+#### Start the Market Spread Application
+
+SSH into `wallaroo-leader-1`
+
+Start the Market Spread application's Initializer with the following command:
+
+```bash
+sudo cset proc -s user -e numactl -- -C 1-16,17 chrt -f 80 ~/wallaroo/testing/performance/apps/market-spread/market-spread  -i wallaroo-leader-1:7000,wallaroo-leader-1:7001 -o wallaroo-follower-2:5555 -m wallaroo-follower-2:5001 -c wallaroo-leader-1:12500 -d wallaroo-leader-1:12501 -t -e wallaroo-leader-1:5050  -w 2 --ponynoblock --ponythreads=16 --ponypinasio
+```
+
+SSH into `wallaroo-follower-3`
+
+Start the Market Spread application's 2nd Worker with the following command:
+
+```bash
+sudo cset proc -s user -e numactl -- -C 1-16,17 chrt -f 80 ~/wallaroo/testing/performance/apps/market-spread/market-spread  -i wallaroo-leader-1:7000,wallaroo-leader-1:7001 -o wallaroo-follower-2:5555 -m wallaroo-follower-2:5001 -c wallaroo-leader-1:12500 -n worker2 --ponythreads=16 --ponypinasio --ponynoblock
+```
+
+
+#### Start Giles Senders
+
+SSH into `wallaroo-follower-1`
+
+You can run the following commands individually or in a script, the only sender that must be run to completion before starting any of the others is the Initial NBBO Sender.
+
+##### Initial NBBO Sender
+
+```bash
+sudo cset proc -s user -e numactl -- -C 1,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7001 -m 350 -s 350 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/nbbo/350-symbols_initial-nbbo-fixish.msg --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
+```
+
+##### NBBO Senders
+
+These senders send out roughly 1.5 million messages per second, adjust according to your needs.
+
+```bash
+sudo cset proc -s user -e numactl -- -C 2,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7001 -m 10000000000 -s 450 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/nbbo/350-symbols_nbbo-fixish.msg -r --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
+```
+
+```bash
+sudo cset proc -s user -e numactl -- -C 3,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7001 -m 10000000000 -s 450 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/nbbo/350-symbols_nbbo-fixish.msg -r --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
+```
+
+```bash
+sudo cset proc -s user -e numactl -- -C 4,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7001 -m 10000000000 -s 450 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/nbbo/350-symbols_nbbo-fixish.msg -r --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
+```
+
+```bash
+sudo cset proc -s user -e numactl -- -C 5,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7001 -m 10000000000 -s 450 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/nbbo/350-symbols_nbbo-fixish.msg -r --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
+```
+
+```bash
+sudo cset proc -s user -e numactl -- -C 6,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7001 -m 10000000000 -s 450 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/nbbo/350-symbols_nbbo-fixish.msg -r --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
+```
+
+```bash
+sudo cset proc -s user -e numactl -- -C 7,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7001 -m 10000000000 -s 450 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/nbbo/350-symbols_nbbo-fixish.msg -r --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
+```
+
+```bash
+sudo cset proc -s user -e numactl -- -C 8,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7001 -m 10000000000 -s 450 -i 2_500_000 -f ~/wallaroo/testing/data/market_spread/nbbo/350-symbols_nbbo-fixish.msg -r --ponythreads=1 -y -g 46 --ponypinasio -w —ponynoblock
+```
+
+##### Orders Senders
+
+These senders send out roughly 1.5 million messages per second, adjust according to your needs.
+
+```bash
+sudo cset proc -s user -e numactl -- -C 9,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7000 -m 5000000000 -s 900 -i 5_000_000 -f ~/wallaroo/testing/data/market_spread/orders/350-symbols_orders-fixish.msg -r --ponythreads=1 -y -g 57 --ponypinasio -w —ponynoblock
+```
+
+
+```bash
+sudo cset proc -s user -e numactl -- -C 10,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7000 -m 5000000000 -s 900 -i 5_000_000 -f ~/wallaroo/testing/data/market_spread/orders/350-symbols_orders-fixish.msg -r --ponythreads=1 -y -g 57 --ponypinasio -w —ponynoblock
+```
+
+```bash
+sudo cset proc -s user -e numactl -- -C 11,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7000 -m 5000000000 -s 900 -i 5_000_000 -f ~/wallaroo/testing/data/market_spread/orders/350-symbols_orders-fixish.msg -r --ponythreads=1 -y -g 57 --ponypinasio -w —ponynoblock
+```
+
+```bash
+sudo cset proc -s user -e numactl -- -C 12,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7000 -m 5000000000 -s 900 -i 5_000_000 -f ~/wallaroo/testing/data/market_spread/orders/350-symbols_orders-fixish.msg -r --ponythreads=1 -y -g 57 --ponypinasio -w —ponynoblock
+```
+
+```bash
+sudo cset proc -s user -e numactl -- -C 13,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7000 -m 5000000000 -s 900 -i 5_000_000 -f ~/wallaroo/testing/data/market_spread/orders/350-symbols_orders-fixish.msg -r --ponythreads=1 -y -g 57 --ponypinasio -w —ponynoblock
+```
+
+```bash
+sudo cset proc -s user -e numactl -- -C 14,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7000 -m 5000000000 -s 900 -i 5_000_000 -f ~/wallaroo/testing/data/market_spread/orders/350-symbols_orders-fixish.msg -r --ponythreads=1 -y -g 57 --ponypinasio -w —ponynoblock
+```
+
+```bash
+sudo cset proc -s user -e numactl -- -C 15,17 chrt -f 80 ~/wallaroo/giles/sender/sender -h wallaroo-leader-1:7000 -m 5000000000 -s 900 -i 5_000_000 -f ~/wallaroo/testing/data/market_spread/orders/350-symbols_orders-fixish.msg -r --ponythreads=1 -y -g 57 --ponypinasio -w —ponynoblock
+```
+
+#### Market Spread Cluster Shutdown
+
+When it's time to shutdown your Market Spread cluster, you'd want to do the following.
+
+SSH into `wallaroo-follower-2`
+
+Run the following command to shutdown the cluster:
+
+```bash
+sudo cset proc -s user -e numactl -- -C 2,17 chrt -f 80 ~/wallaroo/utils/cluster_shutdown/cluster_shutdown wallaroo-leader-1:5050 --ponythreads=1 --ponynoblock --ponypinasio
+```
+
+#### AWS Cluster Shutdown
+
+When it's time to shutdown your AWS cluster, you'd want to do the following.
+
+On your local machine, from the `orchestration/terraform` directory, run the following command:
+
+```bash
+make destroy cluster_name=<YOUR_CLUSTER_NAME> mem_required=30 cpus_required=36 num_followers=3 force_instance=c4.8xlarge spot_bid_factor=100 ansible_system_cpus=0,18 ansible_isolcpus=true no_spot=true cluster_project_name=wallaroo_perf_testing
+
+```
+
+You should see output similar to the following if your cluster shutdown properly:
+
+```bash
+Destroy complete! Resources: 5 destroyed.
+==> Successfully ran terraform destroy for cluster 'perftest' in region 'us-east-1' at provider 'aws'!
+==> Releasing cluster lock...
+aws sdb put-attributes --region us-east-1 --domain-name \
+          terraform_locking --item-name aws-us-east-1_lock --attributes \
+          Name=perftest-lock,Value=free,Replace=true \
+          --expected Name=perftest-lock,Value=`id -u -n`-`hostname`
+==> Cluster lock successfully released!
+```
