@@ -16,7 +16,7 @@ cd orchestration/terraform
 Then run the following command to start a 1 machine cluster:
 
 ```bash
-make cluster cluster_name=<YOUR_CLUSTER_NAME> mem_required=30 cpus_required=36 num_followers=0 force_instance=c4.8xlarge spot_bid_factor=100 ansible_system_cpus=0,18 ansible_isolcpus=true no_spot=true cluster_project_name=wallaroo_perf_testing
+make cluster cluster_name=<YOUR_CLUSTER_NAME> mem_required=30 cpus_required=36 num_followers=0 force_instance=c4.8xlarge spot_bid_factor=100 ansible_system_cpus=0,18 ansible_isolcpus=true no_spot=true cluster_project_name=wallaroo_perf_testing ansible_install_devtools=true
 ```
 
 If successful, you should see output that looks like this:
@@ -36,9 +36,7 @@ ssh -i ~/.ssh/ec2/us-east-1.pem ubuntu@<IP_ADDRESS>
 
 ## Build Setup
 
-SSH into the `wallaroo-leader-1` machine and follow the linux set up [instructions](../../../../../book/getting-started/linux-setup.md) up to the `Install Python Development Libraries` section.
-
-Get a copy of the `wallaroo` repo:
+SSH into the `wallaroo-leader-1` machine and get a copy of the `wallaroo` repo:
 
 ```bash
 cd ~/
@@ -49,8 +47,7 @@ Build the required Wallaroo tools:
 ```bash
 cd ~/wallaroo
 make build-machida
-make build-giles-sender
-make build-giles-receiver
+make build-giles-all
 make build-utils-cluster_shutdown
 ```
 
@@ -61,7 +58,7 @@ SSH into `wallaroo-leader-1`
 Start the Metrics UI:
 
 ```bash
-docker run -d -u root --cpuset-cpus 0,18 --privileged  -v /usr/bin:/usr/bin:ro   -v /var/run/docker.sock:/var/run/docker.sock -v /bin:/bin:ro  -v /lib:/lib:ro  -v /lib64:/lib64:ro  -v /usr:/usr:ro  -v /tmp:/apps/metrics_reporter_ui/log  -p 0.0.0.0:4000:4000 -p 0.0.0.0:5001:5001 -e "BINS_TYPE=demo" -e "RELX_REPLACE_OS_VARS=true" --name mui -h mui --net=host wallaroolabs/wallaroo-metrics-ui:0.1
+docker run -d -u root --cpuset-cpus 0,18 --privileged  -v /usr/bin:/usr/bin:ro   -v /var/run/docker.sock:/var/run/docker.sock -v /bin:/bin:ro  -v /lib:/lib:ro  -v /lib64:/lib64:ro  -v /usr:/usr:ro  -v /tmp:/apps/metrics_reporter_ui/log  -p 0.0.0.0:4000:4000 -p 0.0.0.0:5001:5001 -e "BINS_TYPE=demo" -e "RELX_REPLACE_OS_VARS=true" --name mui -h mui --net=host wallaroolabs/wallaroo-metrics-ui:0.4.0
 
 ```
 
